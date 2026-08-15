@@ -32,33 +32,12 @@
     }
     .timer { font-size: 20px; font-weight: bold; color: #d32f2f; }
     
-    #start-screen, #game-screen {
+    #game-screen {
         width: 100%; max-width: 500px; padding: 20px; box-sizing: border-box;
         text-align: center;
     }
-    #start-screen { margin-top: 50px; }
     
-    .setup-group {
-        margin: 20px 0;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 10px;
-    }
-    .setup-group label { font-weight: bold; font-size: 16px; }
-    .setup-group input {
-        padding: 10px; font-size: 16px; width: 100px; text-align: center;
-        border: 1px solid #ccc; border-radius: 6px;
-    }
-
-    #start-btn {
-        padding: 15px 30px; font-size: 18px; font-weight: bold;
-        background: #4CAF50; color: white; border: none; border-radius: 8px;
-        cursor: pointer; transition: 0.2s;
-    }
-    #start-btn:disabled { background: #999; cursor: not-allowed; }
-    
-    .game-info { font-size: 14px; color: #666; margin-bottom: 15px; }
+    .game-info { font-size: 14px; color: #666; margin-bottom: 15px; font-weight: bold; }
 
     .input-display {
         font-size: 28px; height: 40px; font-weight: bold;
@@ -151,24 +130,12 @@
     <div class="timer" id="timer">07:00</div>
 </div>
 
-<div id="start-screen">
-    <h2>Pangram Game</h2>
-    <p id="loading-status" style="font-weight:bold; color:#0056b3;">Connecting to dictionary...</p>
-    
-    <div class="setup-group">
-        <label for="game-num-input">Game Number:</label>
-        <input type="number" id="game-num-input" value="1" min="1">
-    </div>
-
-    <button id="start-btn" disabled onclick="confirmStartGame()">Connecting...</button>
-</div>
-
-<div id="game-screen" style="display: none;">
+<div id="game-screen">
     <div id="message-box"></div>
-    <div class="game-info" id="game-info"></div>
+    <div class="game-info" id="game-info">Loading puzzle...</div>
     <div id="input-display" class="input-display"></div>
     
-    <div class="hive" id="hive">
+    <div class="hive" id="hive" style="opacity: 0.5;">
         <div class="cell outer" onclick="typeLetter(this.innerText)"></div>
         <div class="cell outer" onclick="typeLetter(this.innerText)"></div>
         <div class="cell outer" onclick="typeLetter(this.innerText)"></div>
@@ -186,8 +153,7 @@
     </div>
     <div class="controls">
         <button class="primary" onclick="toggleClue()">Clues</button>
-        <button class="primary" onclick="startNewGame()">New Game</button>
-        <button class="primary" onclick="exitToMainMenu()">Menu</button>
+        <button class="primary" onclick="startNewGame()">New Puzzle</button>
     </div>
 
     <div id="clue-panel" style="display: none;">
@@ -218,10 +184,17 @@
     let timeLeft = 420;
     let gameActive = false;
     let msgTimeout;
+    let audioUnlocked = false;
 
     let dateString = new Date().toDateString();
     let gameIndex = 1;
     let rng;
+
+    function triggerHaptic() {
+        if (navigator.vibrate) {
+            navigator.vibrate(15);
+        }
+    }
 
     function xmur3(str) {
         for(var i = 0, h = 1779033703 ^ str.length; i < str.length; i++) {
@@ -243,103 +216,59 @@
         }
     }
 
-    async function init() {
-        const btn = document.getElementById('start-btn');
-        const statusText = document.getElementById('loading-status');
-        
+    async function autoStartGame() {
+        const info = document.getElementById('game-info');
         try {
-            statusText.innerText = "Downloading dictionary (~4MB)...";
-            btn.innerText = "Downloading...";
-            
-            const response = await fetch('https://raw.githubusercontent.com/dwyl/english-words/master/words_alpha.txt?nocache=' + new Date().getTime());
+            info.innerText = "Loading dictionary...";
+            const response = await fetch('https://raw.githubusercontent.com/dwyl/english-words/master/words_alpha.txt');
             
             if (!response.ok) throw new Error("Network request blocked.");
             
-            statusText.innerText = "Processing words...";
             const text = await response.text();
-            
             const allWords = text.split(/\r?\n/).map(w => w.trim().toLowerCase()).filter(w => w.length > 0);
             const rawSet = new Set(allWords);
             
             const chunkSize = 20000;
             for (let i = 0; i < allWords.length; i += chunkSize) {
                 const chunk = allWords.slice(i, i + chunkSize);
-                
                 for (const word of chunk) {
                     try {
                         if (word.length >= 4) {
-                            // Plural rule: Remove if ending in 's', but protect double-s words like 'glass', 'boss'
                             if (word.endsWith('s') && !word.endsWith('ss') && rawSet.has(word.slice(0, -1))) continue; 
-                            
-                            // Past tense rule: Only checks words ending in 'ed' to protect words like 'prod', 'wind', 'fund'
-                            // Length safeguard prevents short words like 'seed', 'weed', 'feed' from being axed
                             if (word.endsWith('ed') && word.length > 4) {
-                                // Checks if base word exists without 'd' (baked -> bake) or without 'ed' (jumped -> jump)
                                 if (rawSet.has(word.slice(0, -1)) || rawSet.has(word.slice(0, -2))) continue;
                             }
-
                             validWords.push(word);
                             const uniqueLetters = new Set(word);
                             if (uniqueLetters.size === 7) pangramBases.push(Array.from(uniqueLetters).join(''));
                         }
-                    } catch (innerErr) {
-                        continue;
-                    }
+                    } catch (e) {}
                 }
-                
-                let percent = Math.round((i / allWords.length) * 100);
-                statusText.innerText = `Filtering dictionary rules... ${percent}%`;
-                await new Promise(r => setTimeout(r, 1)); 
             }
             
-            btn.innerText = "Start Game";
-            btn.disabled = false;
-            statusText.innerText = "Ready to play!";
-            statusText.style.color = "#4CAF50";
-            
+            launchPuzzle();
         } catch (e) {
-            btn.innerText = "Load Failed";
-            statusText.innerText = "Connection blocked. Please refresh (Ctrl+Shift+R) or check internet connection.";
-            statusText.style.color = "red";
-            console.error(e);
+            info.innerText = "Error loading dictionary. Please refresh.";
+            info.style.color = "red";
         }
     }
 
-    function playWhistle() {
-        const snd = document.getElementById('whistle-snd');
-        snd.currentTime = 0;
-        snd.play().catch(e => console.log(e));
-        setTimeout(() => { snd.pause(); }, 4000);
+    function unlockAudio() {
+        if (audioUnlocked) return;
+        const wSnd = document.getElementById('whistle-snd');
+        const cSnd = document.getElementById('cheer-snd');
+        [wSnd, cSnd].forEach(audio => {
+            audio.play().then(() => {
+                audio.pause();
+                audio.currentTime = 0;
+            }).catch(e => {});
+        });
+        audioUnlocked = true;
     }
 
-    function playCheer() {
-        const snd = document.getElementById('cheer-snd');
-        snd.currentTime = 2;
-        snd.play().catch(e => console.log(e));
-        setTimeout(() => { snd.pause(); }, 3000);
-    }
-
-    function getWordScore(word) {
-        if (word.length === 4) return 1;
-        let score = word.length;
-        if (isPangram(word)) score += 7;
-        return score;
-    }
-
-    function isPangram(word) {
-        return new Set(word.split('')).size === 7;
-    }
-
-    function confirmStartGame() {
-        const inputVal = parseInt(document.getElementById('game-num-input').value);
-        gameIndex = isNaN(inputVal) || inputVal < 1 ? 1 : inputVal;
-        startGame();
-    }
-
-    function startGame() {
-        document.getElementById('start-screen').style.display = 'none';
-        document.getElementById('game-screen').style.display = 'block';
-        document.getElementById('game-info').innerText = `Game #${gameIndex} | ${dateString}`;
+    function launchPuzzle() {
+        document.getElementById('game-info').innerText = `Puzzle #${gameIndex} | ${dateString}`;
+        document.getElementById('game-info').style.color = "#666";
         
         const seed = xmur3(dateString + "-" + gameIndex)();
         rng = mulberry32(seed);
@@ -371,21 +300,35 @@
         if (document.getElementById('clue-panel').style.display !== 'none') updateClues();
     }
 
+    function playWhistle() {
+        const snd = document.getElementById('whistle-snd');
+        snd.currentTime = 0;
+        snd.play().catch(e => console.log(e));
+        setTimeout(() => { snd.pause(); }, 4000);
+    }
+
+    function playCheer() {
+        const snd = document.getElementById('cheer-snd');
+        snd.currentTime = 2;
+        snd.play().catch(e => console.log(e));
+        setTimeout(() => { snd.pause(); }, 3000);
+    }
+
+    function getWordScore(word) {
+        if (word.length === 4) return 1;
+        let score = word.length;
+        if (isPangram(word)) score += 7;
+        return score;
+    }
+
+    function isPangram(word) {
+        return new Set(word.split('')).size === 7;
+    }
+
     function startNewGame() {
+        triggerHaptic();
+        unlockAudio();
         gameIndex++;
-        document.getElementById('game-num-input').value = gameIndex;
-        resetGameVariables();
-        startGame();
-    }
-
-    function exitToMainMenu() {
-        clearInterval(timerInterval);
-        document.getElementById('game-screen').style.display = 'none';
-        document.getElementById('start-screen').style.display = 'block';
-        resetGameVariables();
-    }
-
-    function resetGameVariables() {
         clearInterval(timerInterval);
         currentScore = 0;
         foundWords = [];
@@ -394,6 +337,7 @@
         document.getElementById('current-score').innerText = "0";
         document.getElementById('word-list').innerHTML = "";
         document.getElementById('input-display').innerHTML = "";
+        launchPuzzle();
     }
 
     function positionCells() {
@@ -416,6 +360,8 @@
     }
 
     function jumble() {
+        triggerHaptic();
+        unlockAudio();
         for (let i = outerLetters.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
             [outerLetters[i], outerLetters[j]] = [outerLetters[j], outerLetters[i]];
@@ -425,19 +371,24 @@
 
     function typeLetter(letter) {
         if (!gameActive) return;
+        triggerHaptic();
+        unlockAudio();
         currentInput += letter.toLowerCase();
         updateInputDisplay();
-        checkAutoSubmit(); 
     }
 
     function handleBackspace() {
         if (!gameActive) return;
+        triggerHaptic();
+        unlockAudio();
         currentInput = currentInput.slice(0, -1);
         updateInputDisplay();
     }
 
     function handleClear() {
         if (!gameActive) return;
+        triggerHaptic();
+        unlockAudio();
         currentInput = "";
         updateInputDisplay();
     }
@@ -460,14 +411,10 @@
         msgTimeout = setTimeout(() => box.style.opacity = '0', 1500);
     }
 
-    function checkAutoSubmit() {
-        if (possibleWords.includes(currentInput) && !foundWords.includes(currentInput)) {
-            submitWord();
-        }
-    }
-
     function submitWord() {
         if (!gameActive || !currentInput) return;
+        triggerHaptic();
+        unlockAudio();
         const word = currentInput;
         
         if (word.length < 4) { showMessage("Too short"); return; }
@@ -512,6 +459,8 @@
     }
 
     function toggleClue() {
+        triggerHaptic();
+        unlockAudio();
         const panel = document.getElementById('clue-panel');
         if (panel.style.display === 'none') {
             updateClues();
@@ -573,13 +522,15 @@
 
     document.addEventListener('keydown', (e) => {
         if (!gameActive) return;
+        triggerHaptic();
+        unlockAudio();
         const key = e.key.toLowerCase();
         if (key === 'enter') submitWord();
         else if (key === 'backspace') handleBackspace();
         else if (letters.includes(key)) typeLetter(key);
     });
 
-    document.addEventListener('DOMContentLoaded', init);
+    document.addEventListener('DOMContentLoaded', autoStartGame);
 </script>
 </body>
 </html>
